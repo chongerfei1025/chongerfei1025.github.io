@@ -175,6 +175,7 @@
     editingWorld: null,  // 正在编辑的世界
     personaMemory: {},   // 世界模式：关联角色的聊天记录缓存
     openToken: 0,        // 会话代次，用于丢弃过期的异步回调
+    editingMsgId: null,  // 正在编辑的玩家消息 id
     lastAiEl: null
   };
 
@@ -335,9 +336,7 @@
         elList.innerHTML =
           '<div class="empty"><span class="big">🌍</span>' +
           '还没有世界<br/>点右上角 <b>＋</b> 建一个，AI 当 GM 带你玩' +
-          '<div class="empty-cta">' +
-          '<button class="btn" id="btn-demo-world" type="button">载入示例：透视眼的后宫日常</button>' +
-          '</div></div>';
+          '</div>';
         return;
       }
 
@@ -564,6 +563,7 @@
     showView('#view-chat');
     elMessages.innerHTML = '';
     state.session = null;
+    state.personaMemory = {};   // 彻底丢掉上一个世界留下的聊天记忆缓存
 
     DB.get('worldSaves', worldId).then(function (s) {
       if (!s) {
@@ -573,6 +573,10 @@
       return s;
     }).then(function (s) {
       if (token !== state.openToken) return;   // 已经切到别的世界了
+      // 防御：存档 id 必须和当前世界一致，否则整份丢弃重建
+      if (!s || s.id !== worldId) {
+        s = { id: worldId, messages: [], createdAt: now(), updatedAt: now() };
+      }
       state.session = s;
       renderMessages();
       // 首次进入 / 重开后为空：先让 GM 生成开局
@@ -594,11 +598,18 @@
     elMessages.innerHTML = '';
     var all = state.session ? state.session.messages : [];
     var msgs = all.filter(function (m) { return !m.hidden; });
+
+    // 最后一条玩家消息（世界模式下允许编辑它）
+    var lastUserIdx = -1;
+    for (var k = msgs.length - 1; k >= 0; k--) {
+      if (msgs[k].role === 'user') { lastUserIdx = k; break; }
+    }
+
     var lastTs = 0;
     msgs.forEach(function (m, i) {
       if (!lastTs || (m.ts && m.ts - lastTs > 5 * 60 * 1000)) appendTimeSep(m.ts);
       if (m.ts) lastTs = m.ts;
-      appendBubble(m, { last: i === msgs.length - 1 });
+      appendBubble(m, { last: i === msgs.length - 1, lastUser: i === lastUserIdx });
     });
     scrollBottom(true);
 
@@ -742,6 +753,17 @@
         tools.appendChild(bRegen);
       }
       box.appendChild(tools);
+    }
+
+    // 世界模式：最后一条玩家消息可以编辑
+    if (isWorld && isUser && opt.lastUser && !opt.pending) {
+      var utl = document.createElement('div');
+      utl.className = 'msg-tools';
+      var bEdit = document.createElement('button');
+      bEdit.textContent = '编辑';
+      bEdit.onclick = function () { openMsgEditor(m.id); };
+      utl.appendChild(bEdit);
+      box.appendChild(utl);
     }
 
     wrap.appendChild(av);
@@ -1114,6 +1136,59 @@
     setStreaming(false);
   }
 
+  /* ---- 编辑最后一条玩家消息 ---- */
+  function openMsgEditor(msgId) {
+    if (!state.session) return;
+    var msgs = state.session.messages || [];
+    var target = null;
+    for (var i = 0; i < msgs.length; i++) {
+      if (msgs[i].id === msgId) { target = msgs[i]; break; }
+    }
+    if (!target) { toast('消息不存在'); return; }
+
+    state.editingMsgId = msgId;
+    $('#edit-msg-text').value = target.content;
+    openSheet('#sheet-edit-msg');
+    setTimeout(function () { autoGrow($('#edit-msg-text')); }, 60);
+  }
+
+  /**
+   * @param {boolean} regen true=保存并按新内容重新生成；false=只改文字
+   */
+  function saveEditedMessage(regen) {
+    var id = state.editingMsgId;
+    if (!id || !state.session) return;
+
+    var text = $('#edit-msg-text').value.trim();
+    if (!text) { toast('内容不能为空'); return; }
+
+    var msgs = state.session.messages || [];
+    var idx = -1;
+    for (var i = 0; i < msgs.length; i++) {
+      if (msgs[i].id === id) { idx = i; break; }
+    }
+    if (idx < 0) { toast('消息已不存在'); return; }
+
+    stopGen();
+    closeSheet();
+
+    if (regen) {
+      // 这条之后的所有内容都会失效，整段丢弃重来
+      state.session.messages = msgs.slice(0, idx + 1);
+      state.session.messages[idx].content = text;
+      state.session.messages[idx].ts = now();
+      persistSession();
+      renderMessages();
+      runCompletion();
+    } else {
+      msgs[idx].content = text;
+      persistSession();
+      renderMessages();
+      toast('已修改');
+    }
+    state.editingMsgId = null;
+  }
+
   function regenerate() {
     if (state.streaming || !state.session) return;
     var msgs = state.session.messages;
@@ -1142,6 +1217,11 @@
 
   function persistSession() {
     if (!state.session) return;
+
+    // 防御：会话对象与当前所在的世界/角色不一致时绝不写库
+    if (state.mode === 'world' && state.worldId && state.session.id !== state.worldId) return;
+    if (state.mode === 'persona' && state.personaId && state.session.id !== state.personaId) return;
+
     state.session.updatedAt = now();
 
     if (state.mode === 'world') {
@@ -1244,7 +1324,7 @@
       style: '',
       length: '400~500 字',
       linked: [],
-      syncChat: true,
+      syncChat: false,
       createdAt: now(),
       updatedAt: now()
     };
@@ -1395,19 +1475,18 @@
       });
       w.linked = linked;
       chain = chain.then(function () { return DB.put('worlds', w); });
-      chain.then(function () {
+      return chain.then(function () {
         state.tab = 'world';
         syncTabs();
         toast('已导入「' + w.name + '」+ ' + (data.personas || []).length + ' 个角色');
-        renderList().then(updateFoot);
+        return renderList().then(updateFoot);
       }).catch(function () { toast('导入失败'); });
-      return;
     }
 
     // ---- 世界存档 ----
     if (data && (data.kind === 'world' || data.world)) {
       var w2 = normalizeWorld(data.world || data);
-      DB.put('worlds', w2).then(function () {
+      return DB.put('worlds', w2).then(function () {
         if (data.save && data.save.messages) {
           return DB.put('worldSaves', {
             id: w2.id,
@@ -1419,10 +1498,9 @@
       }).then(function () {
         state.tab = 'world';
         syncTabs();
-        toast('已导入世界「' + w2.name + '」（NPC 关联需重新勾选）');
-        renderList().then(updateFoot);
+        toast('已导入世界「' + w2.name + '」');
+        return renderList().then(updateFoot);
       }).catch(function () { toast('导入失败'); });
-      return;
     }
 
     // ---- 角色卡 ----
@@ -1435,11 +1513,11 @@
     var items = cards.map(normalizeCard);
     var chain2 = Promise.resolve();
     items.forEach(function (c) { chain2 = chain2.then(function () { return DB.put('personas', c); }); });
-    chain2.then(function () {
+    return chain2.then(function () {
       state.tab = 'persona';
       syncTabs();
       toast('已导入 ' + items.length + ' 个角色');
-      renderList().then(updateFoot);
+      return renderList().then(updateFoot);
     }).catch(function () { toast('导入失败'); });
   }
 
@@ -1454,17 +1532,12 @@
     fr.readAsText(file, 'utf-8');
   }
 
-  /** 载入内置示例预设 */
-  function loadDemo() {
-    toast('正在载入预设…');
-    fetch('presets/harem-world.json', { cache: 'no-store' })
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
-      .then(importData)
-      .catch(function (e) { toast('载入失败：' + (e && e.message ? e.message : e)); });
-  }
+  /** 对外暴露的调试/自动化入口（不含任何内置预设） */
+  window.__aisim = {
+    importData: importData,
+    openWorld: function (id) { return openWorld(id); },
+    getState: function () { return state; }
+  };
 
   function download(filename, text) {
     var blob = new Blob([text], { type: 'application/json;charset=utf-8' });
@@ -1671,10 +1744,6 @@
    * ========================================================= */
   function bind() {
     // 列表页：角色 / 世界 切换
-    elList.addEventListener('click', function (e) {
-      if (e.target && e.target.id === 'btn-demo-world') loadDemo();
-    });
-
     $('#seg-tabs').addEventListener('click', function (e) {
       var b = e.target && e.target.closest ? e.target.closest('.seg-btn') : null;
       if (!b) return;
@@ -1691,6 +1760,8 @@
 
     // 世界编辑
     $('#w-save').addEventListener('click', saveWorldFromForm);
+    $('#edit-msg-only').addEventListener('click', function () { saveEditedMessage(false); });
+    $('#edit-msg-save').addEventListener('click', function () { saveEditedMessage(true); });
     $('#w-delete').addEventListener('click', function () {
       if (!state.editingWorld) return;
       if (!confirm('删除世界「' + state.editingWorld.name + '」及其全部存档？')) return;

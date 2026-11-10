@@ -203,6 +203,25 @@
   <div class="sheet-body" id="timeline-body"></div>
 </aside>
 
+<!-- ================= 抽屉：编辑玩家消息 ================= -->
+<aside class="sheet sheet-sm" id="sheet-edit-msg">
+  <div class="sheet-head">
+    <b>编辑这条消息</b>
+    <button class="icon-btn" data-close aria-label="关闭">✕</button>
+  </div>
+  <div class="sheet-body">
+    <label class="field">
+      <span>你的行动 / 台词</span>
+      <textarea id="edit-msg-text" rows="6" placeholder="修改后可以只保存，也可以让 GM 按新内容重新续写…"></textarea>
+    </label>
+    <div class="row-actions">
+      <button class="btn" id="edit-msg-only" type="button">只保存</button>
+      <button class="btn primary" id="edit-msg-save" type="button">保存并重新生成</button>
+    </div>
+    <div class="hint">「保存并重新生成」会删掉这条之后的所有 GM 回复，按新的行动重新续写；「只保存」仅修正文字，保留后续剧情。</div>
+  </div>
+</aside>
+
 <input type="file" id="file-import" accept=".json,application/json" hidden />
 <script src="api.js"></script>
 <script src="app.js"></script>
