@@ -67,6 +67,7 @@
   var DEFAULT_SETTINGS = {
     provider: 'volcengine',
     base: 'https://ark.cn-beijing.volces.com/api/v3',
+    // Key 不内置：旧 Key 已失效，内置反而会在版本迁移时覆盖你手机上填的新 Key
     apiKey: '',
     model: 'doubao-seed-character-260628',
     temperature: 0.95,
@@ -941,8 +942,14 @@
     s += '# 每次回复的固定结构（严格遵守）\n';
     s += '第一部分：状态块。第一行只写 **【状态】**，从第二行起每项单独一行、以「· 」开头：\n';
     s += '**【状态】**\n· 时间：…\n· 地点：…\n· 处境：…\n';
-    s += '状态有变化时然后紧接着再补一个块，同样每项一行：\n';
-    s += '**【变化】**\n· 专注 −8（当前 92）\n· 鼻血值 +12（当前 12）\n';
+    var hasSystems = String(w.systems || '').replace(/\s/g, '').length > 0;
+    if (hasSystems) {
+      s += '状态有变化时紧接着再补一个块，同样每项一行：\n';
+      s += '**【变化】**\n· <特殊系统里真实存在的某个数值名> −8（当前 92）\n';
+      s += '⚠️ 数值名称只能用本世界「特殊系统」里已经定义好的项，从系统设定里原样抄，绝不能自创，也不能沿用其他世界的名字。\n';
+    } else {
+      s += '⚠️ 本世界**没有设定任何数值系统**。因此：只写【状态】这一个块，**绝对不要**出现【变化】块，也不要写任何「××值」「××度」「××条」这类数值或进度条。\n';
+    }
     s += '⚠️ 状态块必须独占若干行，绝对不能和场景正文写在同一行。\n\n';
     s += '第二部分：空一行，写场景正文。长度见开头「最高优先级」那一节：' + len + '，'
       + '分 3~4 个自然段，每段都要有具体的动作或环境细节。'
@@ -966,9 +973,9 @@
       + '前排忽然有人举手，是个声音有点犹豫的男生：「老师，空调真的修不好吗？」'
       + '教室里响起一阵低低的笑声，连教授自己也笑了一下，抬手抹了把额头上的汗，'
       + '说修不好就先忍着，心静自然凉。这话换来又一阵哄笑，有人把课本当扇子扇得哗哗响。'
-      + '就在你准备低头继续装死的时候，太阳穴毫无预兆地「嗡」了一下——'
-      + '那种熟悉的、酸胀的、像有什么东西要从眼眶里顶出来的感觉。\n\n';
-    s += '---\n1. 用透视眼看前排女生的挂坠\n2. 认真听教授讲课\n3. 摸出手机刷球赛\n\n';
+      + '就在你准备低头继续装死的时候，走廊尽头传来一阵脚步声——很慢，一下，又一下，'
+      + '最后停在了教室后门。门上的小窗透进一块方形的光，被人影遮住了一瞬。\n\n';
+    s += '---\n1. 低头装作没听见，继续写自己的笔记\n2. 直接开口问他到底想说什么\n3. 先退开半步，观察周围其他人的反应\n\n';
 
     s += '# 铁律\n';
     s += '1. 绝不替玩家做决定，不写玩家的台词、心理活动和内心独白。只描写环境与 NPC 的反应。\n';
@@ -976,6 +983,7 @@
     s += '3. 剧情必须持续推进，不原地打转，不重复上一段写过的内容。\n';
     s += '4. NPC 有独立动机和底线，不会无缘无故讨好或喜欢玩家。\n';
     s += '5. 严守世界观与已发生的事实，不产生矛盾，不引入设定之外的元素。\n';
+    s += '5.1 状态块和选项里出现的任何数值、属性、资源名称，都必须来自本世界的「特殊系统」设定。世界没设数值系统，就完全不要写【变化】块，也不要凭空发明「××值」。\n';
     s += '6. 全程第二人称「你」叙述。不出现「作为 AI」「以下是」这类出戏内容，不要解释自己在做什么。\n';
     s += '7. 世界里的指定角色要在场景合适时自然登场，不要生硬塞入；他们登场后必须严格符合其人设。\n';
     s += '8. 不要说「好的，让我们开始」这类开场白，直接从 **【状态】** 开始写。\n';
@@ -1014,6 +1022,24 @@
     if (!c.model) return false;
     if (!c.apiKey && !/localhost|127\.0\.0\.1|192\.168|10\.\d/.test(c.base)) return false;
     return true;
+  }
+
+  /**
+   * 第二道锁：运行时兜底。
+   * 世界没设数值系统时，把模型擅自写出的【变化】块整段删掉。
+   * 即使模型不听话，玩家也看不到凭空发明的数值。
+   */
+  function sanitizeWorldOutput(text) {
+    if (!text) return text;
+    var w = currentWorld();
+    if (!w) return text;
+    var hasSystems = String(w.systems || '').replace(/\s/g, '').length > 0;
+    if (hasSystems) return text;
+
+    var out = String(text);
+    // 删掉 **【变化】** 或 【变化】 标题，连同其后的「· xxx」明细行
+    out = out.replace(/\*?\*?【变化】\*?\*?[^\n]*\n(?:[ \t]*[·•][^\n]*\n?)*/g, '');
+    return out.replace(/\n{3,}/g, '\n\n');
   }
 
   /* ---------------- 发送 / 生成 ---------------- */
@@ -1097,6 +1123,7 @@
     }).then(function (full) {
       if (state.session !== mySession) return;   // 已被重开/切换，丢弃结果
       acc = full || acc;
+      acc = sanitizeWorldOutput(acc);   // 第二道锁：删掉本世界不该有的【变化】块
       bubble.textContent = acc;
       if (!acc.trim()) bubble.textContent = '（没有收到内容，检查模型名 / 额度 / 接口是否支持流式）';
 
@@ -1110,7 +1137,7 @@
       if (err && err.name === 'AbortError') {
         bubble.textContent = acc ? acc + '\n\n（已停止）' : '（已停止）';
         if (acc.trim()) {
-          mySession.messages.push({ id: uid(), role: 'assistant', content: acc, ts: now() });
+          mySession.messages.push({ id: uid(), role: 'assistant', content: sanitizeWorldOutput(acc), ts: now() });
           persistSession();
         }
         renderMessages();
@@ -1536,7 +1563,8 @@
   window.__aisim = {
     importData: importData,
     openWorld: function (id) { return openWorld(id); },
-    getState: function () { return state; }
+    getState: function () { return state; },
+    sanitize: sanitizeWorldOutput
   };
 
   function download(filename, text) {
