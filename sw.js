@@ -1,5 +1,5 @@
-/* Service Worker —— 网络优先（改代码立即生效），断网回落缓存；API 请求永不缓存 */
-const CACHE = 'aisim-v4';
+/* Service Worker — 网络优先（改代码立即生效），断网回落缓存；API 请求永不缓存 */
+const CACHE = 'aisim-v5';
 const ASSETS = [
   './',
   'index.html',
@@ -43,9 +43,13 @@ self.addEventListener('fetch', (e) => {
   // 跨域（大模型 API）一律直连，不缓存、不拦截
   if (url.origin !== self.location.origin) return;
 
-  // 同源资源：网络优先，拿到什么用什么，同时更新缓存；断网时才回落缓存
+  // 页面与代码文件强制绕过 HTTP 缓存。
+  // GitHub Pages 默认给静态文件 10 分钟缓存，不这样做更新后会一直吃旧版。
+  const fresh = req.mode === 'navigate' ||
+    /\.(html|js|css|json|webmanifest)$/i.test(url.pathname);
+
   e.respondWith(
-    fetch(req).then((res) => {
+    fetch(req, fresh ? { cache: 'no-store' } : undefined).then((res) => {
       if (res && res.status === 200 && res.type === 'basic') {
         const copy = res.clone();
         caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
