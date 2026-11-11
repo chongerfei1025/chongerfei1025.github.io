@@ -768,7 +768,11 @@
       box.appendChild(utl);
     }
 
-    wrap.appendChild(av);
+    if (isWorld && !isUser && !isSys) {
+      wrap.classList.add('noav');   // 世界剧情不显示头像，界面更干净
+    } else {
+      wrap.appendChild(av);
+    }
     wrap.appendChild(box);
     elMessages.appendChild(wrap);
     if (!isUser) state.lastAiEl = wrap;
@@ -955,6 +959,16 @@
 
     s += '你是文字冒险游戏《' + (w.name || '未命名世界') + '》的 GM（游戏主持人 / 裁判）。\n';
     s += '你负责叙述世界、扮演所有 NPC、判定玩家每个行动的后果，并持续把剧情往前推。\n\n';
+
+    var tgp = w.tags || {};
+    var tgLine = [];
+    if (tgp.gender) tgLine.push('主角性别：' + tgp.gender);
+    if (tgp.genre) tgLine.push('题材：' + tgp.genre);
+    if (tgp.tone) tgLine.push('基调：' + tgp.tone);
+    if (tgLine.length) {
+      s += '# 题材标签\n' + tgLine.join('\n') + '\n';
+      s += '（这是对世界的整体定位。写作风格、人物设置、氛围都要贴合这些标签，但不要直接把标签念给玩家听。）\n\n';
+    }
 
     if (w.setting) s += '# 世界设定\n' + w.setting + '\n\n';
     if (w.playerRole) s += '# 玩家的身份（' + user + '）\n' + w.playerRole + '\n\n';
@@ -1517,6 +1531,10 @@
     $('#w-style').value = w.style || '';
     $('#w-length').value = w.length || '400~500 字';
     $('#w-sync').checked = w.syncChat !== false;
+    var tg = w.tags || {};
+    setTagValue('#tag-gender', tg.gender || '');
+    setTagValue('#tag-genre', tg.genre || '');
+    setTagValue('#tag-tone', tg.tone || '');
     $('#w-delete').classList.toggle('hidden', !world);
 
     $('#w-linked').innerHTML = '<div class="hint" style="margin:0">载入角色卡…</div>';
@@ -1575,6 +1593,11 @@
     w.length = $('#w-length').value.trim() || '400~500 字';
     w.linked = $$('#w-linked .link-item.on').map(function (el) { return el.dataset.id; });
     w.syncChat = $('#w-sync').checked;
+    w.tags = {
+      gender: getTagValue('#tag-gender'),
+      genre: getTagValue('#tag-genre'),
+      tone: getTagValue('#tag-tone')
+    };
     w.updatedAt = now();
 
     DB.put('worlds', w).then(function () {
@@ -1933,6 +1956,29 @@
 
     // 世界编辑
     $('#w-save').addEventListener('click', saveWorldFromForm);
+
+    // 界面配色切换
+    var themeGrid = $('#theme-grid');
+    if (themeGrid) {
+      themeGrid.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.themebtn');
+        if (!btn) return;
+        applyTheme(btn.getAttribute('data-t'));
+      });
+    }
+
+    // 世界标签：点一下切换
+    ['#tag-gender', '#tag-genre', '#tag-tone'].forEach(function (sel) {
+      var box = $(sel);
+      if (!box) return;
+      box.addEventListener('click', function (ev) {
+        var btn = ev.target.closest('.tag');
+        if (!btn) return;
+        var already = btn.classList.contains('on');
+        [].forEach.call(box.querySelectorAll('.tag'), function (b) { b.classList.remove('on'); });
+        if (!already) btn.classList.add('on');
+      });
+    });
     $('#edit-msg-only').addEventListener('click', function () { saveEditedMessage(false); });
     $('#edit-msg-save').addEventListener('click', function () { saveEditedMessage(true); });
     $('#w-delete').addEventListener('click', function () {
@@ -2191,7 +2237,50 @@
   /* =========================================================
    * 启动
    * ========================================================= */
+  /* ---------------- 界面配色 ---------------- */
+  var THEME_KEY = 'aisim.theme.v1';
+  var THEMES = ['default', 'blue', 'gold', 'orange'];
+
+  function currentTheme() {
+    try {
+      var v = localStorage.getItem(THEME_KEY);
+      return THEMES.indexOf(v) >= 0 ? v : 'default';
+    } catch (e) { return 'default'; }
+  }
+
+  function applyTheme(name) {
+    var t = THEMES.indexOf(name) >= 0 ? name : 'default';
+    var b = document.body;
+    b.classList.remove('theme-blue', 'theme-gold', 'theme-orange');
+    if (t !== 'default') b.classList.add('theme-' + t);
+    try { localStorage.setItem(THEME_KEY, t); } catch (e) { }
+    var grid = $('#theme-grid');
+    if (grid) {
+      [].forEach.call(grid.querySelectorAll('.themebtn'), function (btn) {
+        btn.classList.toggle('on', btn.getAttribute('data-t') === t);
+      });
+    }
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) {
+      var colors = { default: '#0b0d12', blue: '#f4f7fc', gold: '#0a0806', orange: '#2b2e33' };
+      meta.setAttribute('content', colors[t] || '#0b0d12');
+    }
+  }
+
+  /* ---------------- 世界标签 ---------------- */
+  function getTagValue(sel) {
+    var el = document.querySelector(sel + ' .tag.on');
+    return el ? el.getAttribute('data-v') : '';
+  }
+
+  function setTagValue(sel, val) {
+    [].forEach.call(document.querySelectorAll(sel + ' .tag'), function (btn) {
+      btn.classList.toggle('on', btn.getAttribute('data-v') === val);
+    });
+  }
+
   function boot() {
+    applyTheme(currentTheme());
     bind();
     renderList().then(function () {
       updateFoot();
