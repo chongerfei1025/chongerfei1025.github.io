@@ -957,6 +957,16 @@
     s += '如果玩家上一步行动产生了结果，必须写出明确收益、推进或代价。\n\n';
     s += '第三部分：另起一行写 --- ，再用 3 条编号列出可选行动，每条不超过 25 字。\n\n';
 
+    s += '第四部分（可选）：角色发微信。\n';
+    s += '如果剧情里确实发生了「某个角色用手机给你发消息」的情况，在选项之后另起一行，按这个格式写：\n';
+    s += '【微信】角色名|她发的内容\n';
+    s += 'App 会自动把这行送去对应角色的聊天窗口，玩家在那里能看到。\n';
+    s += '规则：① 只有剧情里真的发生了才写，不要每轮都写，也不要为了用这个功能硬造情节；\n';
+    s += '② 一次写 1~4 条，像真人连发微信那样（先问一句、再补一句、最后一句情绪化的）；超过 4 条 App 会丢掉多余的；\n';
+    s += '③ 内容必须契合当前剧情（她刚看到的事、她的心情、刚才对话里的某个细节）；\n';
+    s += '④ 用角色自己的说话风格，像真人发微信，不要写成旁白或解说；⑤ 角色名必须是世界设定里已有的角色。\n';
+    s += '正文里仍然要自然地写出「你手机震了一下」这类动作，不要只留标记。\n\n';
+
     /* ★ 示例的篇幅决定模型的实际输出篇幅，这一段是控字数的真正开关 */
     s += '完整输出示例（严格模仿这个结构、换行与篇幅）：\n';
     s += '**【状态】**\n· 时间：下午两点零七分\n· 地点：江临大学教学楼 302 教室\n· 处境：你坐在倒数第二排靠窗，鼻子有点发痒\n\n';
@@ -1042,6 +1052,72 @@
     return out.replace(/\n{3,}/g, '\n\n');
   }
 
+  /* =========================================================
+   * 世界剧情 → 角色微信：跨窗口消息转投
+   * GM 可以在回复里用【微信】角色名|内容 的方式，让某个角色
+   * 真的在「角色」窗口里发一条消息，内容与当前剧情契合。
+   * ========================================================= */
+  var WX_RE = /【微信】\s*([^|｜\n：:]+?)\s*[|｜：:]\s*([^\n]+)/g;
+
+  function extractWechatLines(text) {
+    var out = [];
+    if (!text) return out;
+    WX_RE.lastIndex = 0;
+    var m;
+    while ((m = WX_RE.exec(text)) !== null) {
+      var nm = m[1].trim();
+      var body = m[2].trim();
+      if (nm && body) out.push({ name: nm, text: body });
+      if (out.length >= 4) break;
+    }
+    return out;
+  }
+
+  function stripWechatLines(text) {
+    if (!text) return text;
+    WX_RE.lastIndex = 0;
+    var out = text.replace(WX_RE, '');
+    return out.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
+  }
+
+  /* 把消息写进对应角色的会话（角色窗口）
+     注意：角色列表必须从数据库里读，不能用内存里的 state.personas——
+     导入卡包时角色是写进数据库的，内存里的 state.personas 可能是空的。 */
+  var wxLastSig = '';
+  var wxLastAt = 0;
+
+  function pushWechatMessages(lines) {
+    if (!lines || !lines.length) return Promise.resolve(0);
+
+    // 整批签名去重：同一批内容 10 秒内只投递一次（防止回调重复触发 / 网络重试）
+    var sig = lines.map(function (x) { return x.name + '|' + x.text; }).join('\n');
+    if (sig === wxLastSig && (now() - wxLastAt) < 10000) return Promise.resolve(0);
+    wxLastSig = sig;
+    wxLastAt = now();
+
+    return DB.all('personas').then(function (list) {
+      var byName = {};
+      (list || []).forEach(function (pp) {
+        if (pp && pp.name) byName[pp.name] = pp;
+      });
+      var chain = Promise.resolve(0);
+      lines.forEach(function (line) {
+        chain = chain.then(function (n) {
+          var target = byName[line.name];
+          if (!target) return n;
+          return DB.get('sessions', target.id).then(function (s) {
+            if (!s) s = { id: target.id, messages: [], createdAt: now(), updatedAt: now() };
+            if (!s.messages) s.messages = [];
+            s.messages.push({ id: uid(), role: 'assistant', content: line.text, ts: now(), fromWorld: true });
+            s.updatedAt = now();
+            return DB.put('sessions', s).then(function () { return n + 1; });
+          }).catch(function () { return n; });
+        });
+      });
+      return chain;
+    }).catch(function () { return 0; });
+  }
+
   /* ---------------- 发送 / 生成 ---------------- */
   function setStreaming(on) {
     state.streaming = on;
@@ -1124,6 +1200,18 @@
       if (state.session !== mySession) return;   // 已被重开/切换，丢弃结果
       acc = full || acc;
       acc = sanitizeWorldOutput(acc);   // 第二道锁：删掉本世界不该有的【变化】块
+
+      // 世界剧情里角色发来的微信 → 转投到角色聊天窗口
+      if (state.mode === 'world') {
+        var wxLines = extractWechatLines(acc);
+        if (wxLines.length) {
+          acc = stripWechatLines(acc);
+          pushWechatMessages(wxLines).then(function (n) {
+            if (n > 0) toast('收到 ' + n + ' 条新消息');
+          });
+        }
+      }
+
       bubble.textContent = acc;
       if (!acc.trim()) bubble.textContent = '（没有收到内容，检查模型名 / 额度 / 接口是否支持流式）';
 
